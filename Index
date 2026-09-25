@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Scanner QR - E-Absensi</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f7fb;
+      color: #1f2937;
+    }
+    .wrap {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      padding: 16px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 14px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.08);
+    }
+    h1 { margin: 0 0 6px; font-size: 24px; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .camera {
+      position: relative;
+      overflow: hidden;
+      border-radius: 16px;
+      background: #111827;
+      aspect-ratio: 1 / 1;
+      max-height: 70vh;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .scan-line {
+      position: absolute;
+      left: 12%;
+      right: 12%;
+      top: 50%;
+      height: 2px;
+      background: #fff;
+      opacity: .8;
+      box-shadow: 0 0 10px rgba(255,255,255,.8);
+      animation: scan 2s infinite ease-in-out;
+    }
+    @keyframes scan {
+      0%,100% { transform: translateY(-120px); }
+      50% { transform: translateY(120px); }
+    }
+    .corner {
+      position: absolute;
+      inset: 18% 15%;
+      border: 3px solid rgba(255,255,255,.9);
+      border-radius: 14px;
+      pointer-events: none;
+    }
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 13px 14px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary { background: #2563eb; color: white; }
+    .secondary { background: #e5e7eb; color: #111827; }
+    .danger { background: #dc2626; color: white; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    label {
+      display: block;
+      margin: 10px 0 6px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 11px 12px;
+      font-size: 15px;
+      background: white;
+    }
+    .status {
+      padding: 12px;
+      border-radius: 10px;
+      margin-top: 12px;
+      font-size: 14px;
+      line-height: 1.45;
+      background: #eff6ff;
+    }
+    .result {
+      display: none;
+      padding: 14px;
+      border-radius: 12px;
+      margin-top: 12px;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+    }
+    .result.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .name { font-size: 20px; font-weight: 800; }
+    .nisn { margin-top: 4px; font-family: monospace; }
+    canvas { display:none; }
+    .small { font-size: 12px; color: #6b7280; margin-top: 8px; line-height: 1.5; }
+    @media (max-width: 480px) {
+      .wrap { padding: 10px; }
+      .card { padding: 14px; border-radius: 14px; }
+      .buttons { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <h1>📷 Scanner QR E-Absensi</h1>
+    <div class="muted">Scanner di GitHub Pages → Google Apps Script → Google Spreadsheet</div>
+  </div>
+
+  <div class="card">
+    <label for="apiUrl">URL Web App Google Apps Script</label>
+    <input id="apiUrl" type="url" placeholder="https://script.google.com/macros/s/XXXX/exec">
+
+    <label for="scannerRole">Role Scanner</label>
+    <select id="scannerRole">
+      <option value="guru">Guru</option>
+      <option value="admin">Admin</option>
+    </select>
+
+    <label for="scannerKelas">Kelas yang dipindai</label>
+    <input id="scannerKelas" type="text" placeholder="Contoh: 7A">
+
+    <div class="buttons">
+      <button class="primary" id="saveConfig">Simpan Pengaturan</button>
+      <button class="secondary" id="testApi">Tes Koneksi</button>
+    </div>
+
+    <div class="small">
+      URL Apps Script hanya perlu dimasukkan sekali. Pengaturan disimpan di browser perangkat ini.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="camera">
+      <video id="video" playsinline muted></video>
+      <div class="corner"></div>
+      <div class="scan-line"></div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="buttons">
+      <button class="primary" id="startBtn">Mulai Scanner</button>
+      <button class="danger" id="stopBtn" disabled>Stop Scanner</button>
+    </div>
+
+    <div id="status" class="status">Scanner belum dimulai.</div>
+    <div id="result" class="result"></div>
+  </div>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = id => document.getElementById(id);
+  const video = $("video");
+  const canvas = $("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const statusBox = $("status");
+  const resultBox = $("result");
+
+  let stream = null;
+  let scanning = false;
+  let detector = null;
+  let lastCode = "";
+  let lastScanAt = 0;
+  let busy = false;
+
+  const savedUrl = localStorage.getItem("eabsensi_gas_url") || "";
+  const savedRole = localStorage.getItem("eabsensi_scanner_role") || "guru";
+  const savedKelas = localStorage.getItem("eabsensi_scanner_kelas") || "";
+
+  $("apiUrl").value = savedUrl;
+  $("scannerRole").value = savedRole;
+  $("scannerKelas").value = savedKelas;
+
+  function setStatus(message) {
+    statusBox.textContent = message;
+  }
+
+  function showResult(message, error = false) {
+    resultBox.style.display = "block";
+    resultBox.className = "result" + (error ? " error" : "");
+    resultBox.innerHTML = message;
+  }
+
+  function getApiUrl() {
+    const url = $("apiUrl").value.trim();
+    if (!url) throw new Error("URL Google Apps Script belum diisi.");
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(url)) {
+      throw new Error("URL Apps Script tidak valid. Gunakan URL Web App yang berakhiran /exec.");
+    }
+    return url.replace(/[?&]$/, "");
+  }
+
+  function saveConfig() {
+    const url = $("apiUrl").value.trim();
+    const role = $("scannerRole").value;
+    const kelas = $("scannerKelas").value.trim();
+
+    localStorage.setItem("eabsensi_gas_url", url);
+    localStorage.setItem("eabsensi_scanner_role", role);
+    localStorage.setItem("eabsensi_scanner_kelas", kelas);
+
+    setStatus("Pengaturan scanner berhasil disimpan.");
+  }
+
+  function jsonp(params, timeout = 15000) {
+    return new Promise((resolve, reject) => {
+      let baseUrl;
+      try {
+        baseUrl = getApiUrl();
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      const callbackName =
+        "__eabsensi_cb_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+
+      const script = document.createElement("script");
+      let finished = false;
+
+      const cleanup = () => {
+        try { delete window[callbackName]; } catch (_) {}
+        script.remove();
+      };
+
+      const timer = setTimeout(() => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(new Error("Timeout: Apps Script tidak memberikan jawaban."));
+      }, timeout);
+
+      window[callbackName] = data => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        cleanup();
+        resolve(data);
+      };
+
+      const query = new URLSearchParams();
+      query.set("api", "1");
+      query.set("callback", callbackName);
+
+      Object.keys(params).forEach(key => {
+        const value = params[key];
+        if (value !== undefined && value !== null) {
+          query.set(key, String(value));
+        }
+      });
+
+      script.onerror = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(new Error("Gagal menghubungi Google Apps Script."));
+      };
+
+      script.src = baseUrl + (baseUrl.includes("?") ? "&" : "?") + query.toString();
+      document.body.appendChild(script);
+    });
+  }
+
+  async function testApi() {
+    saveConfig();
+    setStatus("Menguji koneksi ke Apps Script...");
+
+    try {
+      const response = await jsonp({ action: "health" });
+
+      if (response && response.ok) {
+        setStatus("✅ Terhubung. API E-Absensi aktif.");
+      } else {
+        setStatus("❌ API menjawab tetapi statusnya tidak OK.");
+      }
+    } catch (err) {
+      setStatus("❌ " + err.message);
+    }
+  }
+
+  function cleanNisn(value) {
+    return String(value || "").replace(/\D/g, "").trim();
+  }
+
+  async function processQr(text) {
+    if (busy) return;
+
+    const nisn = cleanNisn(text);
+    if (!nisn) {
+      setStatus("QR terbaca, tetapi tidak ditemukan NISN.");
+      return;
+    }
+
+    const now = Date.now();
+
+    // Hindari QR yang sama diproses berkali-kali karena kamera membaca
+    // frame yang sama beberapa kali.
+    if (nisn === lastCode && now - lastScanAt < 5000) return;
+
+    lastCode = nisn;
+    lastScanAt = now;
+    busy = true;
+
+    setStatus("QR terbaca. Memeriksa data siswa...");
+    showResult("Memproses NISN <b>" + escapeHtml(nisn) + "</b>...");
+
+    try {
+      const lookup = await jsonp({
+        action: "lookupSiswaForScan",
+        nisn: nisn
+      });
+
+      const siswa = lookup && lookup.data;
+
+      if (!lookup || !lookup.ok || !siswa) {
+        throw new Error((lookup && lookup.error) || "Data siswa tidak ditemukan.");
+      }
+
+      const nama = siswa.nama || siswa.NAMA || "-";
+      const kelas = siswa.kelas || siswa.KELAS || "-";
+
+      showResult(
+        "<div class='name'>" + escapeHtml(nama) + "</div>" +
+        "<div class='nisn'>NISN: " + escapeHtml(nisn) + "</div>" +
+        "<div class='nisn'>Kelas: " + escapeHtml(kelas) + "</div>" +
+        "<div style='margin-top:8px'>Menyimpan absensi...</div>"
+      );
+
+      const role = $("scannerRole").value.trim();
+      const scannerKelas = $("scannerKelas").value.trim();
+
+      const scan = await jsonp({
+        action: "scanAbsensi",
+        nisn: nisn,
+        scannerRole: role,
+        scannerKelas: scannerKelas
+      });
+
+      const data = scan && scan.data;
+
+      if (!scan || !scan.ok) {
+        throw new Error((scan && scan.error) || "Gagal menyimpan absensi.");
+      }
+
+      // code.gs lama memiliki beberapa format hasil. Tampilkan seluruh
+      // informasi yang relevan tanpa mengubah hasil dari server.
+      const serverMessage =
+        (data && (data.message || data.msg || data.status)) ||
+        "Absensi berhasil diproses.";
+
+      showResult(
+        "<div class='name'>✅ " + escapeHtml(nama) + "</div>" +
+        "<div class='nisn'>NISN: " + escapeHtml(nisn) + "</div>" +
+        "<div style='margin-top:8px'>" + escapeHtml(serverMessage) + "</div>"
+      );
+
+      setStatus("✅ Absensi berhasil dikirim ke Google Spreadsheet.");
+
+      // Beri waktu sebentar agar hasil terlihat sebelum scanner lanjut.
+      setTimeout(() => {
+        busy = false;
+        if (scanning) setStatus("Arahkan kamera ke QR berikutnya.");
+      }, 1800);
+
+    } catch (err) {
+      showResult("❌ " + escapeHtml(err.message), true);
+      setStatus("Gagal memproses absensi.");
+      busy = false;
+    }
+  }
+
+  async function detectWithBarcodeDetector() {
+    if (!detector) {
+      detector = new BarcodeDetector({
+        formats: ["qr_code"]
+      });
+    }
+
+    try {
+      const codes = await detector.detect(video);
+      if (codes && codes.length) {
+        await processQr(codes[0].rawValue);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  let jsQRLoaded = false;
+  let jsQRPromise = null;
+
+  function loadJsQR() {
+    if (jsQRLoaded && window.jsQR) return Promise.resolve();
+
+    if (jsQRPromise) return jsQRPromise;
+
+    jsQRPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
+      s.onload = () => {
+        jsQRLoaded = true;
+        resolve();
+      };
+      s.onerror = () => reject(new Error("Library QR scanner gagal dimuat."));
+      document.head.appendChild(s);
+    });
+
+    return jsQRPromise;
+  }
+
+  async function detectWithJsQR() {
+    try {
+      await loadJsQR();
+
+      if (!video.videoWidth || !video.videoHeight) return false;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = window.jsQR(
+        image.data,
+        image.width,
+        image.height,
+        { inversionAttempts: "attemptBoth" }
+      );
+
+      if (code && code.data) {
+        await processQr(code.data);
+        return true;
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
+  async function scanLoop() {
+    if (!scanning) return;
+
+    try {
+      let found = false;
+
+      if ("BarcodeDetector" in window) {
+        found = await detectWithBarcodeDetector();
+      }
+
+      if (!found) {
+        await detectWithJsQR();
+      }
+    } catch (_) {}
+
+    if (scanning) {
+      requestAnimationFrame(scanLoop);
+    }
+  }
+
+  async function startScanner() {
+    saveConfig();
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error(
+          "Browser tidak mendukung akses kamera. Pastikan membuka GitHub Pages melalui HTTPS."
+        );
+      }
+
+      if (!$("apiUrl").value.trim()) {
+        throw new Error("Masukkan URL Web App Google Apps Script terlebih dahulu.");
+      }
+
+      // Tes API sebelum meminta kamera.
+      setStatus("Memeriksa koneksi Apps Script...");
+      const health = await jsonp({ action: "health" });
+
+      if (!health || !health.ok) {
+        throw new Error((health && health.error) || "API Apps Script tidak aktif.");
+      }
+
+      setStatus("Meminta izin kamera...");
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+
+      scanning = true;
+      $("startBtn").disabled = true;
+      $("stopBtn").disabled = false;
+
+      setStatus("📷 Scanner aktif. Arahkan kamera ke QR siswa.");
+      scanLoop();
+
+    } catch (err) {
+      setStatus("❌ " + err.message);
+      stopScanner();
+    }
+  }
+
+  function stopScanner() {
+    scanning = false;
+
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+
+    video.srcObject = null;
+    $("startBtn").disabled = false;
+    $("stopBtn").disabled = true;
+
+    if (!busy) setStatus("Scanner dihentikan.");
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  $("saveConfig").addEventListener("click", saveConfig);
+  $("testApi").addEventListener("click", testApi);
+  $("startBtn").addEventListener("click", startScanner);
+  $("stopBtn").addEventListener("click", stopScanner);
+
+  window.addEventListener("beforeunload", stopScanner);
+
+  // Tes API otomatis jika URL sudah pernah disimpan.
+  if (savedUrl) {
+    setTimeout(testApi, 400);
+  }
+})();
+</script>
+</body>
+</html>
